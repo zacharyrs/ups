@@ -1,0 +1,394 @@
+mod mailer;
+mod status;
+
+extern crate hidapi;
+use hidapi::{HidApi, HidDevice, HidError};
+use std::{
+    fmt,
+    num::{ParseFloatError, ParseIntError},
+    process::{self, exit},
+    str::Utf8Error,
+    thread, time,
+};
+
+// The UPS uses ASCII characters for communication.
+const TERMINATOR: u8 = 13; // Carriage return
+const SEPARATOR: u8 = 32; // Space
+const PROTOCOL_ID: u8 = 72; // 'H'
+
+// Messages received are at most 8 values.
+// Longer messages are hence split with the above terminator.
+const MAX_DATA_LENGTH: usize = 8;
+
+// We use an arbitrary max number of messages to try receive.
+const MAX_DATA_LOOP: usize = 20;
+
+// The following define polling behaviour and shutdown behaviour.
+const POLL_DELAY: u64 = 15; // Seconds to wait between polls.
+const UTILITY_FAILED_POLL_DELAY: u64 = 1; // Seconds to wait between polls while utility is failed.
+const SECONDS_TO_SHUTDOWN: i32 = 30; // Seconds to wait before shutting down.
+const BATTERY_LOW_THRESHOLD: u8 = 50; // Threshold capacity for a low battery.
+const MINUTES_TO_SHUTDOWN: f32 = 2.0; // Time to wait for PC to shutdown before UPS shuts down.
+const MINUTES_TO_RESTART: i32 = 0; // Time after shutdown before restart. 0 means no restart.
+
+// The following define an email SMTP server.
+const SMTP_USER: &str = "";
+const SMTP_PASS: &str = "";
+const SMTP_RELAY: &str = "smtp.gmail.com";
+const EMAIL_FROM: &str = "";
+const EMAIL_TO: [&str; 2] = ["", ""];
+
+#[derive(Debug)]
+enum UPSError {
+    EmptyVec,
+    Hid(HidError),
+    ParseInt(ParseIntError),
+    ParseFloat(ParseFloatError),
+    Utf8(Utf8Error),
+}
+impl fmt::Display for UPSError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Issue with UPS communication")
+    }
+}
+impl From<HidError> for UPSError {
+    fn from(err: HidError) -> UPSError {
+        UPSError::Hid(err)
+    }
+}
+impl From<ParseIntError> for UPSError {
+    fn from(err: ParseIntError) -> UPSError {
+        UPSError::ParseInt(err)
+    }
+}
+impl From<ParseFloatError> for UPSError {
+    fn from(err: ParseFloatError) -> UPSError {
+        UPSError::ParseFloat(err)
+    }
+}
+impl From<Utf8Error> for UPSError {
+    fn from(err: Utf8Error) -> UPSError {
+        UPSError::Utf8(err)
+    }
+}
+
+struct UPS {
+    device: hidapi::HidDevice,
+    status: status::UPSStatus,
+}
+
+impl UPS {
+    fn new() -> UPS {
+        // Get the HID device (will panic if non-existent).
+        let api: HidApi = HidApi::new().expect("Failed to initialise HIDAPI.");
+        let device: HidDevice = api.open(0x0665, 0x5161).expect("Failed to find UPS.");
+
+        // Create our UPS structure.
+        let mut ups: UPS = UPS {
+            device,
+            status: status::UPSStatus::new(),
+        };
+
+        // Check the protocol is right.
+        ups.send_command("M")
+            .expect("Failed to query UPS protocol version.");
+        let mut res: Vec<u8> = Vec::new();
+        ups.get_response(&mut res)
+            .expect("Failed to read UPS protocol version.");
+
+        assert!(
+            res[0] == PROTOCOL_ID,
+            "UPS returned incorrect protocol identifier."
+        );
+
+        // Update with the rated values and current status.
+        ups.get_ups_ratings().expect("Failed to read UPS ratings.");
+        ups.get_ups_status().expect("Failed to update UPS status.");
+
+        return ups;
+    }
+
+    fn send_command(&self, cmd: &str) -> Result<(), UPSError> {
+        for chunk in cmd.as_bytes().chunks(MAX_DATA_LENGTH) {
+            // We need to prefix with a null byte to specify the USB interface to use.
+            // Hence our message is `MAX_DATA_LENGTH` + 1.
+            let mut message: [u8; MAX_DATA_LENGTH + 1] = [0; MAX_DATA_LENGTH + 1];
+
+            // Now we convert our command to bytes
+            for i in 0..chunk.len() {
+                message[i + 1] = chunk[i]
+            }
+
+            // And send it off to the UPS.
+            self.device.write(&message)?;
+        }
+
+        self.device.write(&[0, TERMINATOR])?;
+        Ok(())
+    }
+
+    fn get_response(&self, res: &mut Vec<u8>) -> Result<(), UPSError> {
+        // We at most `MAX_DATA_LOOP` times (till we read a terminator).
+        for _ in 0..MAX_DATA_LOOP {
+            // Temporary array for data.
+            let mut data: [u8; MAX_DATA_LENGTH] = [0; MAX_DATA_LENGTH];
+            // Read one message.
+            self.device.read(&mut data)?;
+
+            // Add character by character to the output, and return on the terminator.
+            for c in data {
+                if c == TERMINATOR {
+                    return Ok(());
+                }
+                res.push(c)
+            }
+        }
+
+        Err(UPSError::EmptyVec)
+    }
+
+    fn send_and_split(&self, cmd: &str, out: &mut Vec<Vec<u8>>) -> Result<(), UPSError> {
+        // Set up an array for our data, then send and receive from the UPS.
+        let mut data: Vec<u8> = Vec::new();
+        self.send_command(cmd)?;
+        self.get_response(&mut data)?;
+
+        // Strip the first character (a '#' or '(').
+        data.remove(0);
+
+        // Loop through the full message and split at `SEPARATOR`, pushing vectors to the output.
+        out.push(Vec::new());
+        for c in data {
+            if c == SEPARATOR {
+                out.push(Vec::new());
+            } else {
+                out.last_mut().unwrap().push(c);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_ups_ratings(&mut self) -> Result<(), UPSError> {
+        let mut res: Vec<Vec<u8>> = Vec::new();
+        self.send_and_split("F", &mut res)?;
+        self.status.rated_output_voltage = std::str::from_utf8(&(res[0]))?.parse()?;
+        self.status.rated_output_current = std::str::from_utf8(&res[1])?.parse()?;
+        self.status.rated_battery_voltage = std::str::from_utf8(&res[2])?.parse()?;
+        self.status.rated_output_frequency = std::str::from_utf8(&res[3])?.parse()?;
+
+        Ok(())
+    }
+
+    fn get_ups_status(&mut self) -> Result<(), UPSError> {
+        let mut res: Vec<Vec<u8>> = Vec::new();
+        self.send_and_split("QS", &mut res)?;
+        self.status.input_voltage = std::str::from_utf8(&res[0])?.parse()?;
+        self.status.input_fault_voltage = std::str::from_utf8(&res[1])?.parse()?;
+        self.status.output_voltage = std::str::from_utf8(&res[2])?.parse()?;
+        self.status.output_load = std::str::from_utf8(&res[3])?.parse()?;
+        self.status.output_frequency = std::str::from_utf8(&res[4])?.parse()?;
+        self.status.battery_voltage = std::str::from_utf8(&res[5])?.parse()?;
+
+        self.status.utility_failed = res[7][0] == b'1';
+        self.status.shutdown_active = res[7][6] == b'1';
+
+        let mut res: Vec<Vec<u8>> = Vec::new();
+        self.send_and_split("QI", &mut res)?;
+        self.status.remaining_capacity = std::str::from_utf8(&res[0])?.parse()?;
+        self.status.seconds_to_empty = std::str::from_utf8(&res[1])?.parse()?;
+        self.status.input_frequency = std::str::from_utf8(&res[2])?.parse()?;
+        self.status.output_current = std::str::from_utf8(&res[3])?.parse()?;
+
+        self.status.test_result = match res[7][7] {
+            b'1' => status::UPSTestResults::Passed,
+            b'2' => status::UPSTestResults::Warning,
+            b'3' => status::UPSTestResults::Error,
+            b'4' => status::UPSTestResults::Aborted,
+            b'5' => status::UPSTestResults::InProgress,
+            _ => status::UPSTestResults::NoTest,
+        };
+        self.status.overloaded = res[7][8] == b'1';
+        self.status.replace_battery = res[7][9] == b'1';
+        self.status.charging = res[7][10] == b'1';
+        self.status.ups_mode = match res[7][12] {
+            b'1' => status::UPSModes::Standby,
+            b'2' => status::UPSModes::Line,
+            b'3' => status::UPSModes::Inverting,
+            b'4' => status::UPSModes::SelfTest,
+            b'5' => status::UPSModes::Fault,
+            _ => status::UPSModes::Idle,
+        };
+
+        Ok(())
+    }
+
+    fn shutdown(&self, delay: f32, restart: i32) -> Result<(), UPSError> {
+        let cmd: String;
+        if delay < 1.0 {
+            cmd = format!("S.{:01}R{:04}", delay * 10.0, restart);
+        } else {
+            cmd = format!("S{:02}R{:04}", delay, restart);
+        }
+        self.send_command(cmd.as_str())?;
+        Ok(())
+    }
+
+    // fn run_test(&self) -> Result<(), UPSError> {
+    //     self.send_command("T")?;
+    //     thread::sleep(time::Duration::from_secs(10));
+    //     Ok(())
+    // }
+
+    // fn cancel_shutdown(&self) -> Result<(), UPSError> {
+    //     self.send_command("C")?;
+    //     Ok(())
+    // }
+
+    // fn toggle_beep(&self) -> Result<(), UPSError> {
+    //     self.send_command("Q")?;
+    //     Ok(())
+    // }
+}
+
+fn linux_shutdown() {
+    process::Command::new("/usr/sbin/shutdown")
+        .arg("-h")
+        .arg("now")
+        .output()
+        .unwrap();
+}
+
+fn windows_shutdown() {
+    process::Command::new("C:\\Windows\\System32\\shutdown.exe")
+        .arg("/s")
+        .arg("/f")
+        .arg("/t")
+        .arg("0")
+        .arg("/c")
+        .arg("\"utility failed\"")
+        .output()
+        .unwrap();
+}
+
+fn shutdown(ups: &UPS) {
+    if let Ok(_) = ups.shutdown(MINUTES_TO_SHUTDOWN, MINUTES_TO_RESTART) {
+        println!("Set UPS to shutdown in {}M.", MINUTES_TO_SHUTDOWN)
+    }
+
+    if cfg!(unix) {
+        linux_shutdown()
+    } else if cfg!(windows) {
+        windows_shutdown()
+    }
+
+    exit(0)
+}
+
+fn main() {
+    let mut ups = UPS::new();
+    let mailer = mailer::Mailer::new(
+        SMTP_USER.to_string(),
+        SMTP_PASS.to_string(),
+        SMTP_RELAY,
+        EMAIL_FROM.to_string(),
+        EMAIL_TO.iter().map(|s| s.to_string()).collect(),
+    );
+
+    let mut sent_utility_failed: bool = false;
+    let mut seconds_until_shutdown: i32 = SECONDS_TO_SHUTDOWN;
+    let mut poll_delay: u64;
+    loop {
+        match ups.get_ups_status() {
+            Ok(_) => {}
+            Err(e) => {
+                println!("EMAIL UPS COMMUNICATION FAILED");
+                mailer.send(
+                    "UPS COMMUNICATION FAILED, SHUTTING DOWN",
+                    &format!("UPS COMMUNICATION FAILED\n{:#?}\n{:#?}", e, ups.status).to_string(),
+                );
+                shutdown(&ups)
+            }
+        };
+        println!("{:#?}", ups.status);
+
+        if ups.status.utility_failed {
+            poll_delay = UTILITY_FAILED_POLL_DELAY;
+            seconds_until_shutdown -= poll_delay as i32;
+
+            if !sent_utility_failed {
+                println!("EMAIL UTILITY FAILED");
+                mailer.send(
+                    "UTILITY FAILED",
+                    &format!("UPS UTILITY FAILED\n{:#?}", ups.status).to_string(),
+                );
+                sent_utility_failed = true;
+            }
+
+            if seconds_until_shutdown <= 0 {
+                println!(
+                    "EMAIL SHUTDOWN, UPS HAS {}S LEFT, SHUTDOWN UPS IN {}M",
+                    ups.status.seconds_to_empty, MINUTES_TO_SHUTDOWN
+                );
+                mailer.send(
+                    "UTILITY FAILED, SHUTTING DOWN",
+                    &format!(
+                        "UPS HAS {}S LEFT, SHUTDOWN UPS IN {}M\n{:#?}",
+                        ups.status.seconds_to_empty, MINUTES_TO_SHUTDOWN, ups.status
+                    )
+                    .to_string(),
+                );
+                shutdown(&ups)
+            }
+        } else {
+            poll_delay = POLL_DELAY;
+            seconds_until_shutdown = SECONDS_TO_SHUTDOWN;
+
+            if sent_utility_failed {
+                println!("EMAIL UTILITY BACK");
+                mailer.send(
+                    "UTILITY BACK",
+                    &format!("UPS UTILITY BACK\n{:#?}", ups.status).to_string(),
+                );
+                sent_utility_failed = false;
+            }
+        }
+
+        if ups.status.fault {
+            println!("EMAIL FAULT");
+            mailer.send(
+                "UPS FAULT, SHUTTING DOWN",
+                &format!("UPS REPORTED FAULT\n{:#?}", ups.status).to_string(),
+            );
+            shutdown(&ups)
+        }
+
+        if ups.status.overloaded {
+            println!("EMAIL OVERLOADED");
+            mailer.send(
+                "UPS OVERLOADED, SHUTTING DOWN",
+                &format!("UPS REPORTED OVERLOADED\n{:#?}", ups.status).to_string(),
+            );
+            shutdown(&ups)
+        }
+
+        if ups.status.replace_battery {
+            println!("EMAIL REPLACE BATTERY");
+            mailer.send(
+                "UPS BATTERY NEEDS REPLACEMENT, SHUTTING DOWN",
+                &format!("UPS REPORTED BATTERY NEEDS REPLACEMENT\n{:#?}", ups.status).to_string(),
+            );
+            shutdown(&ups)
+        }
+
+        if ups.status.remaining_capacity < BATTERY_LOW_THRESHOLD {
+            println!("EMAIL LOW BATTERY");
+            mailer.send(
+                "UPS BATTERY LOW",
+                &format!("UPS REPORTED BATTERY LOW\n{:#?}", ups.status).to_string(),
+            );
+        }
+
+        thread::sleep(time::Duration::from_secs(poll_delay));
+    }
+}
