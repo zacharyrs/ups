@@ -109,6 +109,7 @@ impl UPS {
     }
 
     fn send_command(&self, cmd: &str) -> Result<(), UPSError> {
+        println!("=====================");
         for chunk in cmd.as_bytes().chunks(MAX_DATA_LENGTH) {
             // We need to prefix with a null byte to specify the USB interface to use.
             // Hence our message is `MAX_DATA_LENGTH` + 1.
@@ -118,22 +119,34 @@ impl UPS {
             for i in 0..chunk.len() {
                 message[i + 1] = chunk[i]
             }
+            println!(
+                "SEND {:?} {}",
+                message,
+                std::str::from_utf8(&message).unwrap()
+            );
 
             // And send it off to the UPS.
             self.device.write(&message)?;
         }
 
+        println!(
+            "SEND {:?} {}",
+            [0, TERMINATOR],
+            std::str::from_utf8(&[0, TERMINATOR]).unwrap()
+        );
         self.device.write(&[0, TERMINATOR])?;
         Ok(())
     }
 
     fn get_response(&self, res: &mut Vec<u8>) -> Result<(), UPSError> {
         // We at most `MAX_DATA_LOOP` times (till we read a terminator).
-        for _ in 0..MAX_DATA_LOOP {
+        for i in 0..MAX_DATA_LOOP {
+            println!("READ LOOP {}", i);
             // Temporary array for data.
             let mut data: [u8; MAX_DATA_LENGTH] = [0; MAX_DATA_LENGTH];
             // Read one message.
             self.device.read(&mut data)?;
+            println!("READ {:?} {}", data, std::str::from_utf8(&data).unwrap());
 
             // Add character by character to the output, and return on the terminator.
             for c in data {
