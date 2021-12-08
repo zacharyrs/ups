@@ -32,11 +32,8 @@ impl Mailer {
         }
         let email = builder.subject(subject).body(message.to_string()).unwrap();
 
-        println!("{:?}", email);
-
-        match self.relay.send(&email) {
-            Ok(_) => {}
-            Err(e) => println!("Failed to send email: {:?}", e),
+        if let Err(e) = self.relay.send(&email) {
+            eprintln!("Failed to send email: {:?}", e)
         }
     }
 }
