@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // The following define polling behaviour and shutdown behaviour.
 const POLL_DELAY: u64 = 10; // Seconds to wait between polls.
 const UTILITY_FAILED_POLL_DELAY: u64 = 1; // Seconds to wait between polls while utility is failed.
-const COMMUNICATION_FAILED_POLL_DELAY: u64 = 5; //Seconds to wait between polls if communication failed.
+const COMMUNICATION_FAILED_POLL_DELAY: u64 = 2; //Seconds to wait between polls if communication failed.
 const SECONDS_TO_SHUTDOWN: i32 = 30; // Seconds to wait before shutting down.
 const BATTERY_LOW_THRESHOLD: u8 = 50; // Threshold capacity for a low battery.
 const MINUTES_TO_SHUTDOWN: f32 = 2.0; // Time to wait for PC to shutdown before UPS shuts down.
@@ -50,9 +50,8 @@ impl Default for Settings {
 
 fn linux_shutdown() {
     println!("Shutting down.");
-    Command::new("/usr/sbin/shutdown")
-        .arg("-h")
-        .arg("now")
+    Command::new("/bin/sudo")
+        .arg("/sbin/halt")
         .output()
         .unwrap();
 }
@@ -88,12 +87,12 @@ fn shutdown(ups: &ups::UPS, minutes_to_shutdown: f32, minutes_to_restart: i32) {
 
 fn main() {
     let settings: Settings = Figment::from(Serialized::defaults(Settings::default()))
-        .merge(Toml::file("ups.toml"))
+        .merge(Toml::file("/etc/ups/ups.toml"))
         .extract()
         .expect("Failed to read ups config.");
 
     let mailer_settings: mailer::MailerSettings = Figment::new()
-        .merge(Toml::file("mailer.toml"))
+        .merge(Toml::file("/etc/ups/mailer.toml"))
         .extract()
         .expect("Failed to read smtp config.");
 
@@ -158,7 +157,6 @@ fn main() {
                 mailer.send("Utility failed.", &format!("{:#?}", ups.status).to_string());
                 sent_utility_failed = true;
             }
-            thread::sleep(time::Duration::from_secs(poll_delay));
             if seconds_until_shutdown <= 0 {
                 eprintln!(
                     "Shutting down, UPS has {}s remaining, will shutdown in {}min.",
