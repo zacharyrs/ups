@@ -87,6 +87,7 @@ impl UPS {
             self.device = None;
         }
 
+        // This vid:pid should narrow down to our UPS
         let device: HidDevice = self.api.open(0x0665, 0x5161).expect("Failed to find UPS.");
         self.device = Some(device);
 
@@ -116,7 +117,7 @@ impl UPS {
                     break;
                 }
                 if i == (MAX_DATA_LOOP - 1) {
-                    eprintln!("Appears messages still waiting on device - may crash.")
+                    eprintln!("Appears messages may still be waiting on device - may crash.")
                 }
             }
 

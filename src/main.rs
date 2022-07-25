@@ -3,10 +3,12 @@ mod status;
 mod ups;
 
 use std::{
+    path::PathBuf,
     process::{exit, Command},
     thread, time,
 };
 
+use clap::Parser;
 use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
@@ -24,7 +26,8 @@ const MINUTES_TO_SHUTDOWN: f32 = 2.0; // Time to wait for PC to shutdown before 
 const MINUTES_TO_RESTART: i32 = 0; // Time after shutdown before restart. 0 means no restart.
 
 #[derive(Deserialize, Serialize, Debug)]
-struct Settings {
+struct UpsSettings {
+    // Configuration for the actual UPS communication, with the above definitions.
     poll_delay: u64,
     utility_failed_poll_delay: u64,
     communication_failed_poll_delay: u64,
@@ -34,9 +37,9 @@ struct Settings {
     minutes_to_restart: i32,
 }
 
-impl Default for Settings {
+impl Default for UpsSettings {
     fn default() -> Self {
-        Settings {
+        UpsSettings {
             poll_delay: POLL_DELAY,
             utility_failed_poll_delay: UTILITY_FAILED_POLL_DELAY,
             communication_failed_poll_delay: COMMUNICATION_FAILED_POLL_DELAY,
@@ -48,8 +51,32 @@ impl Default for Settings {
     }
 }
 
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Cli {
+    /// Path to mailer settings toml file
+    #[clap(
+        short,
+        long,
+        value_parser,
+        default_value = "/etc/ups/mailer.toml",
+        value_name = "FILE"
+    )]
+    mailer_settings_path: PathBuf,
+
+    /// Path to optional UPS settings toml file
+    #[clap(
+        short,
+        long,
+        value_parser,
+        default_value = "/etc/ups/ups.toml",
+        value_name = "FILE"
+    )]
+    ups_settings_path: PathBuf,
+}
+
+// Helpers to shut down specific OS candidates
 fn linux_shutdown() {
-    println!("Shutting down.");
     Command::new("/bin/sudo")
         .arg("/sbin/halt")
         .output()
@@ -57,7 +84,6 @@ fn linux_shutdown() {
 }
 
 fn windows_shutdown() {
-    println!("Shutting down.");
     Command::new("C:\\Windows\\System32\\shutdown.exe")
         .arg("/s")
         .arg("/f")
@@ -69,12 +95,18 @@ fn windows_shutdown() {
 
 fn shutdown(ups: &ups::UPS, minutes_to_shutdown: f32, minutes_to_restart: i32) {
     if cfg!(debug_assertions) {
+        // Don't actually shut down in debug builds.
         println!("In debug build, not shutting down.")
     } else {
         if let Ok(_) = ups.shutdown(minutes_to_shutdown, minutes_to_restart) {
-            eprintln!("Set UPS to shutdown in {}M.", minutes_to_shutdown)
+            // Inform the UPS to shut down after we have
+            println!("Set UPS to shutdown in {}M.", minutes_to_shutdown)
+        } else {
+            eprintln!("Failed to set UPS to shutdown in {}M.", minutes_to_shutdown)
         }
 
+        // Now shut down the system
+        println!("Shutting down.");
         if cfg!(unix) {
             linux_shutdown()
         } else if cfg!(windows) {
@@ -82,55 +114,59 @@ fn shutdown(ups: &ups::UPS, minutes_to_shutdown: f32, minutes_to_restart: i32) {
         }
     }
 
+    // Friendly exit for Rust's sake, but we'd never actually get here in production...
     exit(0)
 }
 
 fn main() {
-    let settings: Settings = Figment::from(Serialized::defaults(Settings::default()))
-        .merge(Toml::file("/etc/ups/ups.toml"))
+    // Use the cli to make config paths configurable
+    let cli = Cli::parse();
+
+    // Load in the optional ups config, merging with defaults.
+    let ups_settings: UpsSettings = Figment::from(Serialized::defaults(UpsSettings::default()))
+        .merge(Toml::file(cli.ups_settings_path))
         .extract()
         .expect("Failed to read ups config.");
 
+    // Load in the mailer config - this one is mandatory.
     let mailer_settings: mailer::MailerSettings = Figment::new()
-        .merge(Toml::file("/etc/ups/mailer.toml"))
+        .merge(Toml::file(cli.mailer_settings_path))
         .extract()
         .expect("Failed to read smtp config.");
 
     if cfg!(debug_assertions) {
-        println!("{:#?}", settings);
+        // Print our config in debug mode.
+        println!("{:#?}", ups_settings);
         println!("{:#?}", mailer_settings);
     }
 
+    // Initialise the UPS connection and mailer.
     let api: HidApi = HidApi::new().expect("Failed to initialise HIDAPI.");
     let mut ups = ups::UPS::new(api);
     let mailer = mailer::Mailer::new(mailer_settings);
 
     println!("UPS monitor running and connected!");
 
+    // And now enter the endless checking loop...
     let mut sent_utility_failed: bool = false;
-    let mut seconds_until_shutdown: i32 = settings.seconds_to_shutdown;
+    let mut seconds_until_shutdown: i32 = ups_settings.seconds_to_shutdown;
     let mut poll_delay: u64;
     loop {
         if let Err(e) = ups.get_ups_status() {
-            eprintln!(
-                "UPS communication failed - retrying in {}.",
-                settings.communication_failed_poll_delay
-            );
             mailer.send(
                 &format!(
                     "UPS communication failed - retrying in {}.",
-                    settings.communication_failed_poll_delay
+                    ups_settings.communication_failed_poll_delay
                 ),
                 &format!("{:#?}\n{:#?}", e, ups.status).to_string(),
             );
 
             thread::sleep(time::Duration::from_secs(
-                settings.communication_failed_poll_delay,
+                ups_settings.communication_failed_poll_delay,
             ));
             ups.connect();
 
             if let Err(e) = ups.get_ups_status() {
-                eprintln!("UPS communication failed again - shutting down.");
                 mailer.send(
                     "UPS communication failed - shutting down.",
                     &format!("{:#?}\n{:#?}", e, ups.status).to_string(),
@@ -138,8 +174,13 @@ fn main() {
 
                 shutdown(
                     &ups,
-                    settings.minutes_to_shutdown,
-                    settings.minutes_to_restart,
+                    ups_settings.minutes_to_shutdown,
+                    ups_settings.minutes_to_restart,
+                );
+            } else {
+                mailer.send(
+                    &format!("UPS communication restored.",),
+                    &format!("{:#?}\n{:#?}", e, ups.status).to_string(),
                 );
             }
         }
@@ -149,49 +190,45 @@ fn main() {
         }
 
         if ups.status.utility_failed {
-            poll_delay = settings.utility_failed_poll_delay;
+            poll_delay = ups_settings.utility_failed_poll_delay;
             seconds_until_shutdown -= poll_delay as i32;
 
             if !sent_utility_failed {
-                eprintln!("Utility failed.");
                 mailer.send("Utility failed.", &format!("{:#?}", ups.status).to_string());
                 sent_utility_failed = true;
             }
             if seconds_until_shutdown <= 0 {
-                eprintln!(
-                    "Shutting down, UPS has {}s remaining, will shutdown in {}min.",
-                    ups.status.seconds_to_empty, settings.minutes_to_shutdown
-                );
                 mailer.send(
                     "Utility failed - shutting down.",
                     &format!(
                         "UPS has {}s remaining, will shutdown in {}min.\n{:#?}",
-                        ups.status.seconds_to_empty, settings.minutes_to_shutdown, ups.status
+                        ups.status.seconds_to_empty, ups_settings.minutes_to_shutdown, ups.status
                     )
                     .to_string(),
                 );
 
                 shutdown(
                     &ups,
-                    settings.minutes_to_shutdown,
-                    settings.minutes_to_restart,
+                    ups_settings.minutes_to_shutdown,
+                    ups_settings.minutes_to_restart,
                 );
             } else {
                 eprintln!("Utility failed - shutdown in {}s.", seconds_until_shutdown)
             }
         } else {
-            poll_delay = settings.poll_delay;
-            seconds_until_shutdown = settings.seconds_to_shutdown;
+            poll_delay = ups_settings.poll_delay;
+            seconds_until_shutdown = ups_settings.seconds_to_shutdown;
 
             if sent_utility_failed {
-                eprintln!("Utility back.");
-                mailer.send("Utility back.", &format!("{:#?}", ups.status).to_string());
+                mailer.send(
+                    "Utility restored.",
+                    &format!("{:#?}", ups.status).to_string(),
+                );
                 sent_utility_failed = false;
             }
         }
 
         if ups.status.fault {
-            eprintln!("Fault detected - shutting down.");
             mailer.send(
                 "Fault detected - shutting down.",
                 &format!("{:#?}", ups.status).to_string(),
@@ -199,13 +236,12 @@ fn main() {
 
             shutdown(
                 &ups,
-                settings.minutes_to_shutdown,
-                settings.minutes_to_restart,
+                ups_settings.minutes_to_shutdown,
+                ups_settings.minutes_to_restart,
             );
         }
 
         if ups.status.overloaded {
-            eprintln!("UPS overloaded - shutting down.");
             mailer.send(
                 "UPS overloaded - shutting down.",
                 &format!("{:#?}", ups.status).to_string(),
@@ -213,13 +249,12 @@ fn main() {
 
             shutdown(
                 &ups,
-                settings.minutes_to_shutdown,
-                settings.minutes_to_restart,
+                ups_settings.minutes_to_shutdown,
+                ups_settings.minutes_to_restart,
             );
         }
 
         if ups.status.replace_battery {
-            eprintln!("Battery needs replacement - shutting down.");
             mailer.send(
                 "Battery needs replacement - shutting down.",
                 &format!("{:#?}", ups.status).to_string(),
@@ -227,20 +262,18 @@ fn main() {
 
             shutdown(
                 &ups,
-                settings.minutes_to_shutdown,
-                settings.minutes_to_restart,
+                ups_settings.minutes_to_shutdown,
+                ups_settings.minutes_to_restart,
             );
         }
 
-        if ups.status.remaining_capacity < settings.battery_low_threshold {
+        if ups.status.remaining_capacity < ups_settings.battery_low_threshold {
             if ups.status.charging {
-                eprintln!("Battery low capacity.");
                 mailer.send(
                     "Battery low capacity.",
                     &format!("{:#?}", ups.status).to_string(),
                 );
             } else {
-                eprintln!("Battery low capacity and not charging - shutting down.");
                 mailer.send(
                     "Battery low capacity and not charging - shutting down.",
                     &format!("{:#?}", ups.status).to_string(),
