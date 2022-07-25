@@ -12,7 +12,7 @@ cargo build --release
 
 ## Usage
 
-```bash
+```text
 ups 0.1.1
 Zachary Riedlshah <git@zacharyrs.me>
 Cross-platform client for Dynamix Defender ups units.
@@ -75,7 +75,7 @@ user = "user" # Your smtp relay username.
 pass = "pass" # Your smtp relay password.
 relay = "relay.example.com" # Your smtp relay address.
 from = "ups@example.com" # The 'from' email address.
-to = ["dev@example.com", "sysadmin@example.com", ...] # Your recipient email addresses.
+to = ["dev@example.com", "sysadmin@example.com", "..."] # Your recipient email addresses.
 machine_id = "not the hostname" # Optional identifier for the machine, falls back to hostname.
 ```
 
@@ -86,7 +86,7 @@ My `ups` user has passwordless `sudo` access to run `/bin/halt`.
 Note the `dev-hidraw3.device`, which refers to the USB device (created by the `udev` rule above).
 You might need to start this via a timer after boot - I did.
 
-```toml
+```text
 # /etc/systemd/system/ups.service
 [Unit]
 Description=UPS Monitor
