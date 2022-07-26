@@ -37,9 +37,9 @@ impl Mailer {
             // Specify a fallback for `machine_id`, being simply the machine hostname.
             machine_id: settings.machine_id.unwrap_or(
                 hostname::get()
-                    .expect("Failed to retrieve hostname.")
+                    .expect("Failed to retrieve hostname")
                     .into_string()
-                    .expect("Failed to convert hostname to string."),
+                    .expect("Failed to convert hostname to string"),
             ),
             // The actual `SmtpTransport::relay` instance, which internally includes the credentials
             // from the above config.

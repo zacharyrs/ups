@@ -76,8 +76,8 @@ impl UPS {
         ups.connect();
 
         // Update with the rated values and current status.
-        ups.get_ups_ratings().expect("Failed to read UPS ratings.");
-        ups.get_ups_status().expect("Failed to update UPS status.");
+        ups.get_ups_ratings().expect("Failed to read UPS ratings");
+        ups.get_ups_status().expect("Failed to update UPS status");
 
         return ups;
     }
@@ -88,15 +88,15 @@ impl UPS {
         }
 
         // This vid:pid should narrow down to our UPS
-        let device: HidDevice = self.api.open(0x0665, 0x5161).expect("Failed to find UPS.");
+        let device: HidDevice = self.api.open(0x0665, 0x5161).expect("Failed to find UPS");
         self.device = Some(device);
 
         // Check the protocol is right.
         self.send_command("M")
-            .expect("Failed to query UPS protocol version.");
+            .expect("Failed to query UPS protocol version");
         let mut res: Vec<u8> = Vec::new();
         self.get_response(&mut res, None)
-            .expect("Failed to read UPS protocol version.");
+            .expect("Failed to read UPS protocol version");
 
         assert!(
             res[0] == PROTOCOL_ID,

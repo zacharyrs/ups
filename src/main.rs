@@ -126,13 +126,13 @@ fn main() {
     let ups_settings: UpsSettings = Figment::from(Serialized::defaults(UpsSettings::default()))
         .merge(Toml::file(cli.ups_settings_path))
         .extract()
-        .expect("Failed to read ups config.");
+        .expect("Failed to read ups config");
 
     // Load in the mailer config - this one is mandatory.
     let mailer_settings: mailer::MailerSettings = Figment::new()
         .merge(Toml::file(cli.mailer_settings_path))
         .extract()
-        .expect("Failed to read smtp config.");
+        .expect("Failed to read smtp config");
 
     if cfg!(debug_assertions) {
         // Print our config in debug mode.
@@ -141,7 +141,7 @@ fn main() {
     }
 
     // Initialise the UPS connection and mailer.
-    let api: HidApi = HidApi::new().expect("Failed to initialise HIDAPI.");
+    let api: HidApi = HidApi::new().expect("Failed to initialise HIDAPI");
     let mut ups = ups::UPS::new(api);
     let mailer = mailer::Mailer::new(mailer_settings);
 
