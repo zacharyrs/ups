@@ -10,6 +10,13 @@ Simply build with cargo - note that debug builds will disable emailing and shutd
 cargo build --release
 ```
 
+You also need `libusb-1.0` and `libssl`.
+On Ubuntu-based systems just run the following.
+
+```bash
+sudo apt install libusb-1.0-0-dev libssl-dev
+```
+
 ## Usage
 
 ```text
