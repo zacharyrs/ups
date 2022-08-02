@@ -48,8 +48,8 @@ I do this with a `udev` rule:
 
 ```bash
 # /etc/udev/rules.d/69-ups.rules
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="0665", ATTRS{idProduct}=="5161", TAG+="uaccess", TAG+="systemd", GROUP="plugdev", MODE="660"
-KERNEL=="hidraw*", ATTRS{idVendor}=="0665", ATTRS{idProduct}=="5161", TAG+="uaccess", TAG+="systemd", GROUP="plugdev", MODE="660"
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0665", ATTRS{idProduct}=="5161", TAG+="uaccess", SYMLINK+="ups_usb", TAG+="systemd", GROUP="plugdev", MODE="660"
+KERNEL=="hidraw*", ATTRS{idVendor}=="0665", ATTRS{idProduct}=="5161", TAG+="uaccess", SYMLINK+="ups_raw", TAG+="systemd", GROUP="plugdev", MODE="660"
 ```
 
 ### Configuration
@@ -90,15 +90,14 @@ machine_id = "not the hostname" # Optional identifier for the machine, falls bac
 
 I run this as a service via `systemd`.
 My `ups` user has passwordless `sudo` access to run `/bin/halt`.
-Note the `dev-hidraw3.device`, which refers to the USB device (created by the `udev` rule above).
-You might need to start this via a timer after boot - I did.
+Note the `dev-ups_raw.device`, which refers to the USB device (created by the `udev` rule above).
 
 ```text
 # /etc/systemd/system/ups.service
 [Unit]
 Description=UPS Monitor
-After=network.target dev-hidraw3.device
-Wants=ups.timer
+After=network.target dev-ups_raw.device
+Requires=dev-ups_raw.device
 
 [Service]
 Type=simple
