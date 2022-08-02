@@ -25,8 +25,9 @@ const RETRIES: usize = 3;
 
 #[derive(Debug)]
 pub enum UPSError {
-    Timeout,
-    Unknown,
+    ProtocolMismatch,
+    NoDevice,
+    EmptyResponse,
     Hid(HidError),
     ParseInt(ParseIntError),
     ParseFloat(ParseFloatError),
@@ -73,7 +74,7 @@ impl UPS {
             status: status::UPSStatus::new(),
         };
 
-        ups.connect();
+        ups.connect().expect("Failed to connect to UPS");
 
         // Update with the rated values and current status.
         ups.get_ups_ratings().expect("Failed to read UPS ratings");
@@ -82,26 +83,24 @@ impl UPS {
         return ups;
     }
 
-    pub fn connect(&mut self) {
+    pub fn connect(&mut self) -> Result<(), UPSError> {
         if self.device.is_some() {
             self.device = None;
         }
 
         // This vid:pid should narrow down to our UPS
-        let device: HidDevice = self.api.open(0x0665, 0x5161).expect("Failed to find UPS");
-        self.device = Some(device);
+        self.device = Some(self.api.open(0x0665, 0x5161)?);
 
         // Check the protocol is right.
-        self.send_command("M")
-            .expect("Failed to query UPS protocol version");
+        self.send_command("M")?;
         let mut res: Vec<u8> = Vec::new();
-        self.get_response(&mut res, None)
-            .expect("Failed to read UPS protocol version");
+        self.get_response(&mut res, None)?;
 
-        assert!(
-            res[0] == PROTOCOL_ID,
-            "UPS returned incorrect protocol identifier."
-        );
+        if res[0] != PROTOCOL_ID {
+            return Err(UPSError::ProtocolMismatch);
+        }
+
+        Ok(())
     }
 
     fn send_command(&self, cmd: &str) -> Result<(), UPSError> {
@@ -156,7 +155,7 @@ impl UPS {
             device.write(&[0, TERMINATOR])?;
             Ok(())
         } else {
-            return Err(UPSError::Unknown);
+            return Err(UPSError::NoDevice);
         }
     }
 
@@ -174,7 +173,7 @@ impl UPS {
                 // Read one message.
                 let bytes_read = device.read_timeout(&mut data, TIMEOUT)?;
                 if bytes_read == 0 {
-                    return Err(UPSError::Timeout);
+                    return Err(UPSError::EmptyResponse);
                 }
 
                 if cfg!(debug_assertions) {
@@ -197,7 +196,7 @@ impl UPS {
             }
         }
 
-        Err(UPSError::Unknown)
+        Err(UPSError::NoDevice)
     }
 
     fn send_and_split(
@@ -214,8 +213,8 @@ impl UPS {
             match self.get_response(&mut data, length) {
                 Ok(_) => break,
                 Err(e) => {
-                    if matches!(e, UPSError::Timeout) {
-                        self.connect();
+                    if matches!(e, UPSError::EmptyResponse) {
+                        self.connect()?;
                         thread::sleep(time::Duration::from_millis(200));
                         if attempt == (RETRIES - 1) {
                             return Err(e);

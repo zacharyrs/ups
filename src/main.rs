@@ -140,10 +140,14 @@ fn main() {
         println!("{:#?}", mailer_settings);
     }
 
-    // Initialise the UPS connection and mailer.
+    // Initialise the mailer.
+    let mailer = mailer::Mailer::new(mailer_settings);
+
+    mailer.send("TEST", "TEST");
+
+    // Initialise the UPS connection.
     let api: HidApi = HidApi::new().expect("Failed to initialise HIDAPI");
     let mut ups = ups::UPS::new(api);
-    let mailer = mailer::Mailer::new(mailer_settings);
 
     println!("UPS monitor running and connected!");
 
@@ -164,7 +168,19 @@ fn main() {
             thread::sleep(time::Duration::from_secs(
                 ups_settings.communication_failed_poll_delay,
             ));
-            ups.connect();
+
+            if let Err(e) = ups.connect() {
+                mailer.send(
+                    "UPS reconnect failed - shutting down.",
+                    &format!("{:#?}\n{:#?}", e, ups.status).to_string(),
+                );
+
+                shutdown(
+                    &ups,
+                    ups_settings.minutes_to_shutdown,
+                    ups_settings.minutes_to_restart,
+                );
+            }
 
             if let Err(e) = ups.get_ups_status() {
                 mailer.send(
@@ -180,7 +196,7 @@ fn main() {
             } else {
                 mailer.send(
                     &format!("UPS communication restored.",),
-                    &format!("{:#?}\n{:#?}", e, ups.status).to_string(),
+                    &format!("{:#?}", ups.status).to_string(),
                 );
             }
         }
