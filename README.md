@@ -2,19 +2,28 @@
 
 This repo houses a hastily written rust-based client for the Dynamix Defender 2000 series UPSes.
 
-## Building
+## Depencies
 
-Simply build with cargo - note that debug builds will disable emailing and shutdowns.
+The client has two dependencies - `libusb-1.0` and `libssl`.
+You can install these on Ubuntu-based systems with:
 
 ```bash
-cargo build --release
+sudo apt install libusb-1.0-0 libssl
 ```
 
-Make sure you have headers for `libusb-1.0` and `libssl`.
-On Ubuntu-based systems just run the following.
+## Building
+
+To build the client, we require headers for the above dependencies:
+On Ubuntu-based systems, install these with:
 
 ```bash
 sudo apt install libusb-1.0-0-dev libssl-dev
+```
+
+Now build with cargo - note that debug builds will disable emailing and shutdowns.
+
+```bash
+cargo build --release
 ```
 
 ## Usage
