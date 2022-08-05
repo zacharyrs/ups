@@ -99,7 +99,7 @@ machine_id = "not the hostname" # Optional identifier for the machine, falls bac
 ### Running as a Service
 
 I run this as a service via `systemd`.
-My `ups` user has passwordless `sudo` access to run `/bin/halt`.
+My `ups` user has passwordless `sudo` access to run `/sbin/halt`.
 Note the `dev-ups_raw.device`, which refers to the USB device (created by the `udev` rule above).
 
 ```text
