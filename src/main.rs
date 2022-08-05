@@ -143,8 +143,6 @@ fn main() {
     // Initialise the mailer.
     let mailer = mailer::Mailer::new(mailer_settings);
 
-    mailer.send("TEST", "TEST");
-
     // Initialise the UPS connection.
     let api: HidApi = HidApi::new().expect("Failed to initialise HIDAPI");
     let mut ups = ups::UPS::new(api);

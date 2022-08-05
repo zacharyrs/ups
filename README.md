@@ -10,7 +10,7 @@ Simply build with cargo - note that debug builds will disable emailing and shutd
 cargo build --release
 ```
 
-You also need `libusb-1.0` and `libssl`.
+Make sure you have headers for `libusb-1.0` and `libssl`.
 On Ubuntu-based systems just run the following.
 
 ```bash
@@ -74,7 +74,8 @@ minutes_to_restart = 0 # Time after shutdown before restart. 0 means no restart.
 
 #### Mailer Settings
 
-This file is required and specifies the desired recipients and the SMTP relay.
+The second config file is required and specifies the desired recipients and the SMTP relay.
+Leave `user` empty if your relay doesn't require authentication.
 
 ```toml
 # /etc/ups/mailer.toml

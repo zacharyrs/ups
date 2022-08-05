@@ -30,6 +30,8 @@ pub struct Mailer {
 
 impl Mailer {
     pub fn new(settings: MailerSettings) -> Mailer {
+        let relay = SmtpTransport::relay(&settings.relay).unwrap();
+
         // Construct a new mailer instance - used to send UPS alerts over SMTP.
         return Mailer {
             from: settings.from,
@@ -43,10 +45,13 @@ impl Mailer {
             ),
             // The actual `SmtpTransport::relay` instance, which internally includes the credentials
             // from the above config.
-            transport: SmtpTransport::relay(&settings.relay)
-                .unwrap()
-                .credentials(Credentials::new(settings.user, settings.pass))
-                .build(),
+            transport: if settings.user.is_empty() {
+                relay.build()
+            } else {
+                relay
+                    .credentials(Credentials::new(settings.user, settings.pass))
+                    .build()
+            },
         };
     }
 
