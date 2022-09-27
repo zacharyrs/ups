@@ -1,6 +1,7 @@
 # UPS
 
-This repo houses a hastily written rust-based client for the Dynamix Defender 2000 series UPSes.
+This repo houses a hastily written rust-based client for Dynamix Defender series UPSes serving protocol `H`.
+This repo has been tested with five UPSD2000 units.
 
 ## Depencies
 
@@ -8,7 +9,7 @@ The client has two dependencies - `libusb-1.0` and `libssl`.
 You can install these on Ubuntu-based systems with:
 
 ```bash
-sudo apt install libusb-1.0-0 libssl
+sudo apt install libusb-1.0-0 libssl3
 ```
 
 ## Building
@@ -108,11 +109,15 @@ Note the `dev-ups_raw.device`, which refers to the USB device (created by the `u
 Description=UPS Monitor
 After=network.target dev-ups_raw.device
 Requires=dev-ups_raw.device
+StartLimitIntervalSec=30
+StartLimitBurst=2
+FailureAction=shutdown
 
 [Service]
 Type=simple
 User=ups
 ExecStart=/usr/local/bin/ups
+Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
